@@ -1,40 +1,53 @@
-# Install the base requirements for the app.
-# This stage is to support development.
-FROM --platform=$BUILDPLATFORM python:alpine AS base
+# --------------------
+# Stage 1: Python base
+# --------------------
+FROM python:3.10-alpine AS base
 WORKDIR /app
+
+# Install dependencies
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+# Use --no-cache-dir to reduce image size
+RUN pip install --no-cache-dir -r requirements.txt
 
-FROM --platform=$BUILDPLATFORM node:18-alpine AS app-base
+# --------------------
+# Stage 2: Node base for app
+# --------------------
+FROM node:18-alpine AS app-base
 WORKDIR /app
-COPY app/package.json app/yarn.lock ./
-COPY app/spec ./spec
-COPY app/src ./src
 
-# Run tests to validate app
-FROM app-base AS test
-RUN yarn install
+# Copy app package files
+COPY app/package.json app/yarn.lock ./
+RUN yarn install --frozen-lockfile
+
+# Copy app source code and spec files
+COPY app/src ./src
+COPY app/spec ./spec
+
+# Run tests
 RUN yarn test
 
-# Clear out the node_modules and create the zip
-FROM app-base AS app-zip-creator
-COPY --from=test /app/package.json /app/yarn.lock ./
+# --------------------
+# Stage 3: Zip the app
+# --------------------
+FROM node:18-alpine AS app-zip-creator
+WORKDIR /app
+
+COPY --from=app-base /app/package.json /app/yarn.lock ./
 COPY app/spec ./spec
-COPY app/src ./src
-RUN apk add zip && \
-    zip -r /app.zip /app
+COPY --from=app-base /app/src ./src
 
-# Dev-ready container - actual files will be mounted in
-FROM --platform=$BUILDPLATFORM base AS dev
-CMD ["mkdocs", "serve", "-a", "0.0.0.0:8000"]
+# Install zip utility and create zip
+RUN apk add --no-cache zip && zip -r /app.zip /app
 
-# Do the actual build of the mkdocs site
-FROM --platform=$BUILDPLATFORM base AS build
-COPY . .
-RUN mkdocs build
+# --------------------
+# Stage 4: Nginx for deployment
+# --------------------
+FROM nginx:alpine AS stage-6
 
-# Extract the static content from the build
-# and use a nginx image to serve the content
-FROM --platform=$TARGETPLATFORM nginx:alpine
+# Copy app zip to nginx
 COPY --from=app-zip-creator /app.zip /usr/share/nginx/html/assets/app.zip
-COPY --from=build /app/site /usr/share/nginx/html
+
+# Expose port 80
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
